@@ -1,1 +1,1 @@
-{ "name": "usage-band", "version": "0.1.0", "description": "Compact band above the prompt with 5-hour and weekly limits remaining, context tokens and cost; click to expand.", "license": "MIT", "types": "./types/index.d.ts" }
+{ "name": "usage-band", "version": "0.2.0", "description": "Compact band above the prompt with 5-hour and weekly limits remaining, context tokens and cost; click to expand.", "license": "MIT", "types": "./types/index.d.ts" }
