@@ -215,8 +215,9 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const s = await read($, snapshot)
-    if (e.props.hasSurvey || s === null) return next(e)
+    if (e.props.hasSurvey) return next(e)
+    // Installed mid-session: session.start has passed, so load the figures now.
+    const s = (await read($, snapshot)) ?? take(await $.session.usage())
 
     const open = await read($, isOpen)
     const stamp = await read($, clockNow)
