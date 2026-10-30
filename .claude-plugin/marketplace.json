@@ -1,5 +1,12 @@
 {
   "name": "usage-band",
   "owner": { "name": "usage-band" },
-  "plugins": [{ "name": "usage-band", "source": "./", "description": "Compact usage/limits band above the Claude Code prompt." }]
+  "plugins": [
+    {
+      "name": "usage-band",
+      "source": "./",
+      "version": "0.2.1",
+      "description": "Compact usage/limits band above the Claude Code prompt."
+    }
+  ]
 }
