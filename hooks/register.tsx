@@ -6,11 +6,13 @@ import type { Snapshot } from '../types'
 const snapshot = atom({ plugin: 'usage-band', key: 'snapshot' } as const, null)
 const isOpen = atom({ plugin: 'usage-band', key: 'isOpen' } as const, false)
 const clockNow = atom({ plugin: 'usage-band', key: 'now' } as const, 0)
+const isCompact = atom({ plugin: 'usage-band', key: 'isCompact' } as const, false)
 const meta = atom(
   { plugin: 'usage-band', key: 'meta' } as const,
-  { startedAt: 0, turns: 0 },
+  { startedAt: 0, turns: 0, lastUsd: null, last: null, notified: [] },
 )
 
+const ALERTS = [80, 95]
 const MIN = 60_000
 const HOUR = 60 * MIN
 const WINDOW_MS: Record<string, number> = {
@@ -148,12 +150,49 @@ export const register: Register = on => {
   })
 
   on('session.measure', async ($, e, next) => {
-    await update($, snapshot, () => take(e))
+    const snap = take(e)
+    await update($, snapshot, () => snap)
+
+    const m = await read($, meta)
+    const fresh: string[] = []
+    for (const r of snap.rateLimits) {
+      for (const threshold of ALERTS) {
+        const key = `${r.kind}:${r.resetsAt ?? ''}:${threshold}`
+        if (r.percentUsed >= threshold && !m.notified.includes(key)) {
+          fresh.push(key)
+          const left = Math.max(0, 100 - r.percentUsed).toFixed(0)
+          $.ui.toast(`${label[r.kind] ?? r.kind} limit: ${left}% left`)
+        }
+      }
+    }
+    const usd = snap.usd
+    const spent = usd !== null && m.lastUsd !== null ? usd - m.lastUsd : null
+    await update($, meta, cur => ({
+      ...cur,
+      lastUsd: usd ?? cur.lastUsd,
+      last:
+        cur.last && spent !== null && spent > 0
+          ? { ...cur.last, usd: spent }
+          : cur.last,
+      // Keep only keys that can still matter: the newest few.
+      notified: [...cur.notified, ...fresh].slice(-24),
+    }))
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
-    await update($, meta, m => ({ ...m, turns: m.turns + 1 }))
+    const u = e.usage
+    const inputSide = u ? u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens : 0
+    await update($, meta, m => ({
+      ...m,
+      turns: m.turns + 1,
+      last: {
+        seconds: Math.round(e.durationMs / 1000),
+        output: u?.output_tokens ?? 0,
+        cachePct: u && inputSide > 0 ? (u.cache_read_input_tokens / inputSide) * 100 : null,
+        usd: null,
+      },
+    }))
     return next(e)
   })
 
@@ -164,12 +203,32 @@ export const register: Register = on => {
     const open = await read($, isOpen)
     const stamp = await read($, clockNow)
     const m = await read($, meta)
+    const compact = await read($, isCompact)
     const now = stamp || (await $.clock.now())
     const { Box, Text, Button } = $.ui.resolve(e)
 
     const rows = s.rateLimits.map(r => rowFor(r, now))
     const ctxPct = s.tokens === null ? null : Math.min(100, (s.tokens / s.window) * 100)
     const sessionMs = m.startedAt ? now - m.startedAt : 0
+
+    if (compact) {
+      const worst = rows.reduce<Row | null>((a, r) => (a === null || r.remaining < a.remaining ? r : a), null)
+      const five = rows.find(r => r.kind === 'five_hour') ?? worst
+      return (
+        <Box>
+          <Text color={worst ? tone(worst.remaining) : undefined}>● </Text>
+          {rows.map(row => (
+            <Text key={row.kind} dimColor>
+              {label[row.kind] ?? row.kind} {row.remaining.toFixed(0)}%{'  '}
+            </Text>
+          ))}
+          {five?.msLeft != null ? (
+            <Text dimColor>⟳ {countdown(five.msLeft, five.kind === 'five_hour' && five.msLeft < HOUR)}{'  '}</Text>
+          ) : null}
+          <Button key="expand" dimColor label="▸" onPress={() => update($, isCompact, () => false)} />
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column">
@@ -247,6 +306,13 @@ export const register: Register = on => {
                 </Text>
               </Text>
             ) : null}
+            {m.last ? (
+              <Text dimColor>
+                {'last'.padEnd(6)} {m.last.seconds}s · {fmt(m.last.output)} out
+                {m.last.cachePct !== null ? ` · cache ${m.last.cachePct.toFixed(0)}%` : ''}
+                {m.last.usd !== null ? ` · $${m.last.usd.toFixed(2)}` : ''}
+              </Text>
+            ) : null}
             <Text dimColor>
               {'session'.padEnd(6)} {span(sessionMs)} · {m.turns} turns
               {s.usd !== null
@@ -257,6 +323,14 @@ export const register: Register = on => {
                   }`
                 : ''}
             </Text>
+            <Button
+              key="compact"
+              dimColor
+              label="compact view"
+              onPress={() =>
+                update($, isCompact, () => true).then(() => update($, isOpen, () => false))
+              }
+            />
           </Box>
         ) : null}
       </Box>

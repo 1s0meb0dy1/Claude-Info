@@ -5,7 +5,21 @@ export type Snapshot = {
   usd: number | null
 }
 
-export type Meta = { startedAt: number; turns: number }
+export type LastTurn = {
+  seconds: number
+  output: number
+  cachePct: number | null
+  usd: number | null
+}
+
+export type Meta = {
+  startedAt: number
+  turns: number
+  lastUsd: number | null
+  last: LastTurn | null
+  /** `kind:resetsAt:threshold` keys already announced by a toast. */
+  notified: string[]
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -14,6 +28,7 @@ declare module 'claude-code' {
       isOpen: boolean
       now: number
       meta: Meta
+      isCompact: boolean
     }
   }
 }
