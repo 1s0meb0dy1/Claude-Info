@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Snapshot } from '../types'
+import type { Meta, Snapshot } from '../types'
 
 const snapshot = atom({ plugin: 'usage-band', key: 'snapshot' } as const, null)
 const isOpen = atom({ plugin: 'usage-band', key: 'isOpen' } as const, false)
@@ -13,6 +13,15 @@ const meta = atom(
 )
 
 const ALERTS = [80, 95]
+/** State saved by an older version lacks newer fields; fill them in. */
+const fresh = (m: Partial<Meta> | null | undefined): Meta => ({
+  startedAt: m?.startedAt ?? 0,
+  turns: m?.turns ?? 0,
+  lastUsd: m?.lastUsd ?? null,
+  last: m?.last ?? null,
+  notified: m?.notified ?? [],
+})
+
 const MIN = 60_000
 const HOUR = 60 * MIN
 const WINDOW_MS: Record<string, number> = {
@@ -131,7 +140,10 @@ export const register: Register = on => {
     const t = await $.clock.now()
     await update($, snapshot, () => first)
     await update($, clockNow, () => t)
-    await update($, meta, m => ({ ...m, startedAt: m.startedAt || t }))
+    await update($, meta, raw => {
+      const m = fresh(raw)
+      return { ...m, startedAt: m.startedAt || t }
+    })
 
     timer?.cancel()
     // Redraws only when the shown text can change: every second in the final
@@ -153,13 +165,13 @@ export const register: Register = on => {
     const snap = take(e)
     await update($, snapshot, () => snap)
 
-    const m = await read($, meta)
-    const fresh: string[] = []
+    const m = fresh(await read($, meta))
+    const announced: string[] = []
     for (const r of snap.rateLimits) {
       for (const threshold of ALERTS) {
         const key = `${r.kind}:${r.resetsAt ?? ''}:${threshold}`
         if (r.percentUsed >= threshold && !m.notified.includes(key)) {
-          fresh.push(key)
+          announced.push(key)
           const left = Math.max(0, 100 - r.percentUsed).toFixed(0)
           $.ui.toast(`${label[r.kind] ?? r.kind} limit: ${left}% left`)
         }
@@ -167,7 +179,9 @@ export const register: Register = on => {
     }
     const usd = snap.usd
     const spent = usd !== null && m.lastUsd !== null ? usd - m.lastUsd : null
-    await update($, meta, cur => ({
+    await update($, meta, raw => {
+      const cur = fresh(raw)
+      return {
       ...cur,
       lastUsd: usd ?? cur.lastUsd,
       last:
@@ -175,15 +189,18 @@ export const register: Register = on => {
           ? { ...cur.last, usd: spent }
           : cur.last,
       // Keep only keys that can still matter: the newest few.
-      notified: [...cur.notified, ...fresh].slice(-24),
-    }))
+      notified: [...cur.notified, ...announced].slice(-24),
+      }
+    })
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     const u = e.usage
     const inputSide = u ? u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens : 0
-    await update($, meta, m => ({
+    await update($, meta, raw => {
+      const m = fresh(raw)
+      return {
       ...m,
       turns: m.turns + 1,
       last: {
@@ -192,7 +209,8 @@ export const register: Register = on => {
         cachePct: u && inputSide > 0 ? (u.cache_read_input_tokens / inputSide) * 100 : null,
         usd: null,
       },
-    }))
+      }
+    })
     return next(e)
   })
 
@@ -202,7 +220,7 @@ export const register: Register = on => {
 
     const open = await read($, isOpen)
     const stamp = await read($, clockNow)
-    const m = await read($, meta)
+    const m = fresh(await read($, meta))
     const compact = await read($, isCompact)
     const now = stamp || (await $.clock.now())
     const { Box, Text, Button } = $.ui.resolve(e)
