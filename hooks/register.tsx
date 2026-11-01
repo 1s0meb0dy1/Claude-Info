@@ -41,9 +41,10 @@ const fmt = (n: number) =>
       ? `${Math.round(n / 1000)}k`
       : `${n}`
 
-const bar = (remaining: number, width = 8) => {
+/** Thin line gauge: a heavy line for what is left, a dotted track for the rest. */
+const gauge = (remaining: number, width: number) => {
   const filled = Math.round((Math.max(0, Math.min(100, remaining)) / 100) * width)
-  return '▰'.repeat(filled) + '▱'.repeat(width - filled)
+  return { on: '━'.repeat(filled), off: '╌'.repeat(width - filled) }
 }
 
 const tone = (remaining: number) =>
@@ -104,17 +105,6 @@ const rowFor = (r: Snapshot['rateLimits'][number], now: number): Row => {
     runsOutIn,
     resetsAt: r.resetsAt,
   }
-}
-
-/** Bar of what's left, with a ┃ at where the clock says you'd be on an even pace. */
-const paced = (remaining: number, timeLeftPct: number | null, width = 24) => {
-  const filled = Math.round((remaining / 100) * width)
-  const cells: string[] = Array.from({ length: width }, (_, i) => (i < filled ? '▰' : '▱'))
-  if (timeLeftPct !== null) {
-    const at = Math.min(width - 1, Math.max(0, Math.round((timeLeftPct / 100) * width) - 1))
-    cells[at] = '┃'
-  }
-  return cells.join('')
 }
 
 const take = (u: {
@@ -229,119 +219,166 @@ export const register: Register = on => {
     const rows = s.rateLimits.map(r => rowFor(r, now))
     const ctxPct = s.tokens === null ? null : Math.min(100, (s.tokens / s.window) * 100)
     const sessionMs = m.startedAt ? now - m.startedAt : 0
+    const worst = rows.reduce<Row | null>(
+      (a, r) => (a === null || r.remaining < a.remaining ? r : a),
+      null,
+    )
+    const dot = <Text dimColor> │ </Text>
 
     if (compact) {
-      const worst = rows.reduce<Row | null>((a, r) => (a === null || r.remaining < a.remaining ? r : a), null)
       const five = rows.find(r => r.kind === 'five_hour') ?? worst
       return (
         <Box>
-          <Text color={worst ? tone(worst.remaining) : undefined}>● </Text>
+          <Text color={worst ? tone(worst.remaining) : 'inactive'}>● </Text>
           {rows.map(row => (
-            <Text key={row.kind} dimColor>
+            <Text key={row.kind} dimColor tabular>
               {label[row.kind] ?? row.kind} {row.remaining.toFixed(0)}%{'  '}
             </Text>
           ))}
           {five?.msLeft != null ? (
-            <Text dimColor>⟳ {countdown(five.msLeft, five.kind === 'five_hour' && five.msLeft < HOUR)}{'  '}</Text>
+            <Text dimColor tabular>
+              ⟳ {countdown(five.msLeft, five.kind === 'five_hour' && five.msLeft < HOUR)}{'  '}
+            </Text>
           ) : null}
           <Button key="expand" dimColor label="▸" onPress={() => update($, isCompact, () => false)} />
         </Box>
       )
     }
 
-    return (
-      <Box flexDirection="column">
-        <Box>
-          {rows.map(row => {
-            const fiveH = row.kind === 'five_hour'
-            return (
-              <Text key={row.kind}>
-                <Text dimColor>{label[row.kind] ?? row.kind} </Text>
-                <Text color={tone(row.remaining)}>{bar(row.remaining)}</Text>
-                <Text> {row.remaining.toFixed(0)}%</Text>
-                {row.runsOutIn !== null ? <Text color="warning"> ↯</Text> : null}
-                {row.msLeft !== null ? (
-                  <Text dimColor> ⟳ {countdown(row.msLeft, fiveH && row.msLeft < HOUR)}</Text>
-                ) : null}
-                <Text dimColor>{'   '}</Text>
-              </Text>
-            )
-          })}
-          {ctxPct !== null && s.tokens !== null ? (
-            <Text>
-              <Text dimColor>ctx </Text>
-              <Text color="suggestion">{bar(100 - ctxPct, 4)}</Text>
-              <Text dimColor> {ctxPct.toFixed(0)}%{'   '}</Text>
+    const chip = (row: Row, width: number) => {
+      const g = gauge(row.remaining, width)
+      const critical = row.remaining <= 15
+      return (
+        <Text key={row.kind}>
+          {critical ? (
+            <Text inverse color="error" bold>{` ${label[row.kind] ?? row.kind} `}</Text>
+          ) : (
+            <Text dimColor>{label[row.kind] ?? row.kind} </Text>
+          )}
+          <Text color={tone(row.remaining)}>{g.on}</Text>
+          <Text dimColor>{g.off}</Text>
+          <Text bold tabular> {row.remaining.toFixed(0)}%</Text>
+          {row.runsOutIn !== null ? <Text color="warning"> ↯</Text> : null}
+          {row.msLeft !== null ? (
+            <Text dimColor tabular>
+              {'  '}⟳ {countdown(row.msLeft, row.kind === 'five_hour' && row.msLeft < HOUR)}
             </Text>
           ) : null}
-          {s.usd !== null ? <Text dimColor>${s.usd.toFixed(2)}{'   '}</Text> : null}
-          {rows.length === 0 && s.tokens === null ? (
-            <Text dimColor>usage: no data yet{'   '}</Text>
-          ) : null}
-          <Button
-            key="toggle"
-            dimColor
-            label={open ? '▾' : '▸'}
-            onPress={() => update($, isOpen, v => !v)}
-          />
-        </Box>
-        {open ? (
-          <Box flexDirection="column" paddingLeft={2}>
-            {rows.map(row => (
-              <Box key={row.kind} flexDirection="column">
+        </Text>
+      )
+    }
+
+    const summary = (
+      <Box>
+        {rows.map((row, i) => (
+          <Box key={row.kind}>
+            {i > 0 ? dot : null}
+            {chip(row, 8)}
+          </Box>
+        ))}
+        {ctxPct !== null ? (
+          <Text>
+            {rows.length > 0 ? dot : null}
+            <Text dimColor>ctx </Text>
+            <Text color="suggestion" tabular>{ctxPct.toFixed(0)}%</Text>
+          </Text>
+        ) : null}
+        {s.usd !== null ? (
+          <Text>
+            {rows.length > 0 || ctxPct !== null ? dot : null}
+            <Text dimColor tabular>${s.usd.toFixed(2)}</Text>
+          </Text>
+        ) : null}
+        {rows.length === 0 && s.tokens === null ? (
+          <Text dimColor>usage: no data yet</Text>
+        ) : null}
+        <Text>{'  '}</Text>
+        <Button
+          key="toggle"
+          dimColor
+          label={open ? '▾' : '▸'}
+          onPress={() => update($, isOpen, v => !v)}
+        />
+      </Box>
+    )
+
+    if (!open) return summary
+
+    return (
+      <Box flexDirection="column">
+        {summary}
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor="inactive"
+          paddingX={1}
+          marginTop={0}
+        >
+          {rows.map(row => {
+            const g = gauge(row.remaining, 28)
+            const tick = row.timeLeftPct === null ? null : Math.round((row.timeLeftPct / 100) * 28)
+            return (
+              <Box key={row.kind} flexDirection="column" marginBottom={1}>
                 <Text>
-                  <Text bold>{(label[row.kind] ?? row.kind).padEnd(6)}</Text>
-                  <Text color={tone(row.remaining)}>
-                    {paced(row.remaining, row.timeLeftPct)}
+                  <Text bold>{label[row.kind] ?? row.kind}</Text>
+                  <Text dimColor>
+                    {row.kind === 'five_hour'
+                      ? '  5-hour window'
+                      : row.kind === 'seven_day'
+                        ? '  weekly window'
+                        : ''}
                   </Text>
-                  <Text> {row.remaining.toFixed(0)}% left</Text>
-                  <Text dimColor> ({row.used}% used)</Text>
                 </Text>
-                <Text dimColor>
-                  {'      '}
+                <Text>
+                  <Text color={tone(row.remaining)}>{g.on}</Text>
+                  <Text dimColor>{g.off}</Text>
+                  <Text bold tabular> {row.remaining.toFixed(0)}% left</Text>
+                  <Text dimColor tabular>  ({row.used}% used)</Text>
+                </Text>
+                {tick !== null ? (
+                  <Text dimColor>
+                    {' '.repeat(Math.max(0, Math.min(27, tick - 1)))}▲ even pace
+                  </Text>
+                ) : null}
+                <Text dimColor tabular>
                   {row.msLeft !== null
-                    ? `resets in ${countdown(row.msLeft, true)}${
-                        row.resetsAt ? ` (${clockTime(row.resetsAt)})` : ''
-                      }`
+                    ? `resets in ${countdown(row.msLeft, true)}${row.resetsAt ? ` · ${clockTime(row.resetsAt)}` : ''}`
                     : 'no reset time'}
                   {row.runsOutIn !== null
-                    ? `  ·  at this pace runs out in ${span(row.runsOutIn)}`
+                    ? `  ·  ↯ runs out in ${span(row.runsOutIn)} at this pace`
                     : row.timeLeftPct !== null
-                      ? '  ·  pace is fine'
+                      ? '  ·  on a comfortable pace'
                       : ''}
                 </Text>
               </Box>
-            ))}
-            {rows.length > 0 ? (
-              <Text dimColor>{'      '}┃ = where an even pace would be right now</Text>
-            ) : null}
-            {ctxPct !== null && s.tokens !== null ? (
+            )
+          })}
+          {ctxPct !== null && s.tokens !== null ? (
+            <Box flexDirection="column" marginBottom={1}>
+              <Text bold>Context</Text>
               <Text>
-                <Text bold>{'ctx'.padEnd(6)}</Text>
-                <Text color="suggestion">{paced(100 - ctxPct, null)}</Text>
-                <Text dimColor>
-                  {' '}
-                  {fmt(s.tokens)} / {fmt(s.window)} tokens ({ctxPct.toFixed(0)}% full)
-                </Text>
+                <Text color="suggestion">{gauge(100 - ctxPct, 28).on}</Text>
+                <Text dimColor>{gauge(100 - ctxPct, 28).off}</Text>
+                <Text bold tabular> {ctxPct.toFixed(0)}% full</Text>
+                <Text dimColor tabular>  {fmt(s.tokens)} / {fmt(s.window)} tokens</Text>
               </Text>
-            ) : null}
-            {m.last ? (
-              <Text dimColor>
-                {'last'.padEnd(6)} {m.last.seconds}s · {fmt(m.last.output)} out
-                {m.last.cachePct !== null ? ` · cache ${m.last.cachePct.toFixed(0)}%` : ''}
-                {m.last.usd !== null ? ` · $${m.last.usd.toFixed(2)}` : ''}
-              </Text>
-            ) : null}
-            <Text dimColor>
-              {'session'.padEnd(6)} {span(sessionMs)} · {m.turns} turns
-              {s.usd !== null
-                ? ` · $${s.usd.toFixed(2)}${
-                    sessionMs > 10 * MIN
-                      ? ` · $${((s.usd / sessionMs) * HOUR).toFixed(2)}/h`
-                      : ''
-                  }`
-                : ''}
+            </Box>
+          ) : null}
+          <Text dimColor tabular>
+            session {span(sessionMs)} · {m.turns} turns
+            {s.usd !== null ? ` · $${s.usd.toFixed(2)}` : ''}
+            {s.usd !== null && sessionMs > 10 * MIN
+              ? ` · $${((s.usd / sessionMs) * HOUR).toFixed(2)}/h`
+              : ''}
+          </Text>
+          {m.last ? (
+            <Text dimColor tabular>
+              last turn {m.last.seconds}s · {fmt(m.last.output)} out
+              {m.last.cachePct !== null ? ` · cache ${m.last.cachePct.toFixed(0)}%` : ''}
+              {m.last.usd !== null ? ` · $${m.last.usd.toFixed(2)}` : ''}
             </Text>
+          ) : null}
+          <Box marginTop={1}>
             <Button
               key="compact"
               dimColor
@@ -351,7 +388,7 @@ export const register: Register = on => {
               }
             />
           </Box>
-        ) : null}
+        </Box>
       </Box>
     )
   })
