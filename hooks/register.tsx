@@ -107,6 +107,254 @@ const rowFor = (r: Snapshot['rateLimits'][number], now: number): Row => {
   }
 }
 
+
+// ── Vector drawing (desktop, VS Code, mobile): Svg replaces the text gauges ──
+
+const COLORS = {
+  success: '#22c55e',
+  warning: '#f59e0b',
+  error: '#ef4444',
+  accent: '#8b5cf6',
+}
+
+const colorFor = (remaining: number) =>
+  remaining > 40 ? COLORS.success : remaining > 15 ? COLORS.warning : COLORS.error
+
+const esc = (t: string) =>
+  t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** Neutral greys and alpha fills read on a light and a dark page alike. */
+const SVG_STYLE = `<style>
+  text{font-family:-apple-system,"Segoe UI",system-ui,Roboto,sans-serif}
+  .t{fill:#1f2328}.m{fill:#6b7280}
+  @media (prefers-color-scheme:dark){.t{fill:#e6edf3}.m{fill:#9ca3af}}
+  .tr{fill:none;stroke:rgba(128,128,128,.28)}
+  .pill{fill:rgba(128,128,128,.10);stroke:rgba(128,128,128,.22)}
+</style>`
+
+const ring = (cx: number, cy: number, r: number, pct: number, color: string) => {
+  const c = 2 * Math.PI * r
+  const arc = (Math.max(0, Math.min(100, pct)) / 100) * c
+  return (
+    `<circle class="tr" cx="${cx}" cy="${cy}" r="${r}" stroke-width="4"/>` +
+    (arc > 0
+      ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="4" ` +
+        `stroke-linecap="round" stroke-dasharray="${arc.toFixed(1)} ${c.toFixed(1)}" ` +
+        `transform="rotate(-90 ${cx} ${cy})"/>`
+      : '')
+  )
+}
+
+type Chip = {
+  title: string
+  value: string
+  pct: number | null
+  color: string
+  isCritical?: boolean
+  warn?: boolean
+  width: number
+}
+
+const chipSvg = (x: number, c: Chip) =>
+  `<g transform="translate(${x} 0)">` +
+  `<rect class="pill" x="0.5" y="4.5" width="${c.width - 1}" height="35" rx="17.5"` +
+  (c.isCritical ? ` style="fill:rgba(239,68,68,.14);stroke:${COLORS.error}"` : '') +
+  `/>` +
+  (c.pct !== null ? ring(22, 22, 11, c.pct, c.color) : '') +
+  `<text class="m" x="${c.pct !== null ? 42 : 18}" y="19" font-size="10" letter-spacing=".6">${esc(c.title)}</text>` +
+  `<text class="t" x="${c.pct !== null ? 42 : 18}" y="33" font-size="12.5" font-weight="600">${esc(c.value)}` +
+  (c.warn ? `<tspan fill="${COLORS.warning}"> ↯</tspan>` : '') +
+  `</text></g>`
+
+type GraphicInput = {
+  rows: Row[]
+  ctxPct: number | null
+  tokens: number | null
+  window: number
+  usd: number | null
+  sessionMs: number
+  meta: Meta
+}
+
+const summarySvg = (g: GraphicInput) => {
+  const chips: Chip[] = g.rows.map(r => {
+    const fiveH = r.kind === 'five_hour'
+    const long = r.kind === 'seven_day'
+    return {
+      title: fiveH ? '5-HOUR' : long ? 'WEEKLY' : (label[r.kind] ?? r.kind).toUpperCase(),
+      value:
+        `${r.remaining.toFixed(0)}% left` +
+        (r.msLeft !== null ? ` · ${countdown(r.msLeft, fiveH && r.msLeft < HOUR)}` : ''),
+      pct: r.remaining,
+      color: colorFor(r.remaining),
+      isCritical: r.remaining <= 15,
+      warn: r.runsOutIn !== null,
+      width: 178,
+    }
+  })
+  if (g.ctxPct !== null) {
+    chips.push({
+      title: 'CONTEXT',
+      value: `${g.ctxPct.toFixed(0)}% · ${fmt(g.tokens ?? 0)}`,
+      pct: g.ctxPct,
+      color: COLORS.accent,
+      width: 128,
+    })
+  }
+  if (g.usd !== null) {
+    chips.push({
+      title: 'SESSION',
+      value: `$${g.usd.toFixed(2)}`,
+      pct: null,
+      color: COLORS.accent,
+      width: 84,
+    })
+  }
+  let x = 0
+  const parts = chips.map(c => {
+    const out = chipSvg(x, c)
+    x += c.width + 8
+    return out
+  })
+  const width = Math.max(40, x - 8)
+  return {
+    width,
+    height: 44,
+    svg:
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} 44" width="${width}" height="44">` +
+      SVG_STYLE +
+      parts.join('') +
+      `</svg>`,
+  }
+}
+
+const bar = (
+  x: number,
+  y: number,
+  w: number,
+  remaining: number,
+  color: string,
+  marker: number | null,
+) => {
+  const fill = Math.max(0, Math.min(100, remaining)) / 100
+  const fw = fill > 0 ? Math.max(8, w * fill) : 0
+  return (
+    `<rect x="${x}" y="${y}" width="${w}" height="8" rx="4" fill="rgba(128,128,128,.22)"/>` +
+    (fw > 0 ? `<rect x="${x}" y="${y}" width="${fw.toFixed(1)}" height="8" rx="4" fill="${color}"/>` : '') +
+    (marker !== null
+      ? `<rect class="t" x="${(x + (w * marker) / 100 - 1).toFixed(1)}" y="${y - 3}" width="2" height="14" rx="1" opacity=".75"/>`
+      : '')
+  )
+}
+
+const cardSvg = (g: GraphicInput) => {
+  const W = 560
+  const pad = 16
+  const inner = W - pad * 2
+  let y = 20
+  const out: string[] = []
+
+  const block = (
+    title: string,
+    sub: string,
+    right: string,
+    remaining: number,
+    color: string,
+    marker: number | null,
+    detail: string,
+    isCritical: boolean,
+  ) => {
+    out.push(
+      `<text class="t" x="${pad}" y="${y}" font-size="13" font-weight="700">${esc(title)}` +
+        `<tspan class="m" font-weight="400" font-size="11.5">  ${esc(sub)}</tspan></text>` +
+        `<text x="${W - pad}" y="${y}" text-anchor="end" font-size="13" font-weight="700" ` +
+        `fill="${isCritical ? COLORS.error : color}">${esc(right)}</text>` +
+        bar(pad, y + 9, inner, remaining, color, marker) +
+        `<text class="m" x="${pad}" y="${y + 36}" font-size="11.5">${esc(detail)}</text>`,
+    )
+    y += 56
+  }
+
+  for (const r of g.rows) {
+    const fiveH = r.kind === 'five_hour'
+    const reset =
+      r.msLeft !== null
+        ? `resets in ${countdown(r.msLeft, true)}${r.resetsAt ? ` · ${clockTime(r.resetsAt)}` : ''}`
+        : 'no reset time'
+    const pace =
+      r.runsOutIn !== null
+        ? `  ·  ↯ runs out in ${span(r.runsOutIn)} at this pace`
+        : r.timeLeftPct !== null
+          ? '  ·  comfortable pace'
+          : ''
+    block(
+      label[r.kind] ?? r.kind,
+      fiveH ? '5-hour window' : r.kind === 'seven_day' ? 'weekly window' : '',
+      `${r.remaining.toFixed(0)}% left`,
+      r.remaining,
+      colorFor(r.remaining),
+      r.timeLeftPct,
+      reset + pace,
+      r.remaining <= 15,
+    )
+  }
+  if (g.ctxPct !== null && g.tokens !== null) {
+    block(
+      'Context',
+      'current window',
+      `${g.ctxPct.toFixed(0)}% full`,
+      g.ctxPct,
+      COLORS.accent,
+      null,
+      `${fmt(g.tokens)} of ${fmt(g.window)} tokens`,
+      false,
+    )
+  }
+
+  if (g.rows.some(r => r.timeLeftPct !== null)) {
+    out.push(
+      `<rect class="t" x="${pad}" y="${y - 10}" width="2" height="12" rx="1" opacity=".75"/>` +
+        `<text class="m" x="${pad + 10}" y="${y}" font-size="10.5">where an even pace would be right now</text>`,
+    )
+    y += 22
+  }
+
+  const stats: string[] = []
+  stats.push(
+    `session ${span(g.sessionMs)} · ${g.meta.turns} turns` +
+      (g.usd !== null
+        ? ` · $${g.usd.toFixed(2)}` +
+          (g.sessionMs > 10 * MIN ? ` · $${((g.usd / g.sessionMs) * HOUR).toFixed(2)}/h` : '')
+        : ''),
+  )
+  if (g.meta.last) {
+    const l = g.meta.last
+    stats.push(
+      `last turn ${l.seconds}s · ${fmt(l.output)} out` +
+        (l.cachePct !== null ? ` · cache ${l.cachePct.toFixed(0)}%` : '') +
+        (l.usd !== null ? ` · $${l.usd.toFixed(2)}` : ''),
+    )
+  }
+  out.push(
+    `<line x1="${pad}" y1="${y - 14}" x2="${W - pad}" y2="${y - 14}" stroke="rgba(128,128,128,.25)"/>`,
+  )
+  for (const line of stats) {
+    out.push(`<text class="m" x="${pad}" y="${y + 4}" font-size="11.5">${esc(line)}</text>`)
+    y += 18
+  }
+  const H = y + 6
+  return {
+    width: W,
+    height: H,
+    svg:
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">` +
+      SVG_STYLE +
+      `<rect class="pill" x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="14"/>` +
+      out.join('') +
+      `</svg>`,
+  }
+}
+
 const take = (u: {
   rateLimits: Snapshot['rateLimits']
   context: { tokens?: number; window: number }
@@ -241,6 +489,65 @@ export const register: Register = on => {
             </Text>
           ) : null}
           <Button key="expand" dimColor label="▸" onPress={() => update($, isCompact, () => false)} />
+        </Box>
+      )
+    }
+
+    if (e.surface !== 'terminal') {
+      const { Svg } = $.ui.resolve(e)
+      const g: GraphicInput = {
+        rows,
+        ctxPct,
+        tokens: s.tokens,
+        window: s.window,
+        usd: s.usd,
+        sessionMs,
+        meta: m,
+      }
+      const head = summarySvg(g)
+      const nothing = rows.length === 0 && ctxPct === null && s.usd === null
+      return (
+        <Box flexDirection="column">
+          <Box alignItems="center">
+            {nothing ? (
+              <Text dimColor>usage: no data yet  </Text>
+            ) : (
+              <Svg
+                key="summary"
+                source={head.svg}
+                alt={rows
+                  .map(r => `${label[r.kind] ?? r.kind} ${r.remaining.toFixed(0)}% left`)
+                  .join(', ')}
+                width={head.width}
+                height={head.height}
+              />
+            )}
+            <Button
+              key="toggle"
+              dimColor
+              label={open ? '▾' : '▸'}
+              onPress={() => update($, isOpen, v => !v)}
+            />
+          </Box>
+          {open ? (
+            <Box flexDirection="column">
+              <Svg
+                key="card"
+                source={cardSvg(g).svg}
+                alt="Usage details: limits, context, session"
+                width={cardSvg(g).width}
+                height={cardSvg(g).height}
+              />
+              <Button
+                key="compact"
+                dimColor
+                label="compact view"
+                onPress={() =>
+                  update($, isCompact, () => true).then(() => update($, isOpen, () => false))
+                }
+              />
+            </Box>
+          ) : null}
         </Box>
       )
     }

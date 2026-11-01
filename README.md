@@ -2,6 +2,16 @@
 
 A compact, low-distraction band above the Claude Code prompt: how much of your 5-hour and weekly limits is left, a live countdown to the reset, and a pace forecast. Click the arrow to expand.
 
+**Desktop app, VS Code and mobile** draw it as vector graphics: pill chips with ring gauges, rounded bars with an even-pace marker, a red-tinted chip when a window runs low. It follows the light/dark theme.
+
+| Light | Dark |
+| --- | --- |
+| ![light](docs/preview-light.png) | ![dark](docs/preview-dark.png) |
+
+*(Previews are rendered from sample data.)*
+
+**Terminal** (no vector element there) gets a text version of the same band:
+
 ```
 5h ━━━━━╌╌╌ 63% ↯  ⟳ 2h 14m │ 7d ━━━╌╌╌╌╌ 41%  ⟳ 3d 4h │ ctx 27% │ $1.37  ▸
 ```
